@@ -35,7 +35,7 @@ unsigned int round_duration;
 unsigned int number_of_rounds;
 int current_round_number = 0;
 
-struct sigaction sa_chld, sa_io, sa_alarm, sa_usr1, sa_usr2;;
+struct sigaction sa_int, sa_alarm, sa_usr1, sa_usr2;
 
 int fd_shm;
 // Define a structure to hold the flag
@@ -48,6 +48,22 @@ struct shared_data *shared_mem;
 
 // SIGNAL HANDLERS
 
+
+void signalt_handler_int (int signum) {
+
+    // kill all children
+    for (int i = 0; i < 2*PLAYERS_PER_TEAM; i++) {
+        kill(process_pid[i], SIGINT);
+    }
+
+    // unmap the shared memory
+    munmap(shared_mem, sizeof(struct shared_data));
+
+    #ifdef __GUI__
+    kill(gui_pid, SIGKILL);
+    #endif
+    exit(0);
+}
 
 void signal_handler(int signum) {
 
@@ -92,11 +108,6 @@ void signal_handler(int signum) {
     }
 
 
-    if (signum == SIGIO) {
-        
-        printf("entrered SIGIO from parent\n");
-    }
-
     fflush(stdout);
 }
 
@@ -124,8 +135,7 @@ void alarm_handler(int signum) {
     if (current_round_number < number_of_rounds) {
         //reset the gui 
         #ifdef __GUI__
-        value.sival_int = -1;
-        sigqueue(gui_pid, SIGUI, value);
+        kill(gui_pid, SIGUI);
         #endif
         doOneRound();
     }
@@ -150,21 +160,19 @@ void alarm_handler(int signum) {
             reset_stdout();
         }
 
-        // remove the FIFOs
-        unlink(FIFO1);
-        unlink(FIFO2);
-        
         for (int i = 0; i < 2*PLAYERS_PER_TEAM; i++) {
-            kill(process_pid[i], SIGKILL);
+            kill(process_pid[i], SIGINT);
         }
+        
+        //unmap the shared memory
+        munmap(shared_mem, sizeof(struct shared_data));
+        
         #ifdef __GUI__
         kill(gui_pid, SIGKILL);
         #endif
 
         exit(0);
     }
-
-
 }
 
 int main(int argc, char *argv[]) {
@@ -185,57 +193,36 @@ int main(int argc, char *argv[]) {
     }
 
 #endif 
+
     read_parameters(argc, argv);
     create_shared_mem();
     
     fork_children();
     init_teams();
-    
-    // Set up SIGCHLD handler
-    sa_chld.sa_handler = signal_handler;
-    sigemptyset(&sa_chld.sa_mask);
-    sa_chld.sa_flags = 0;
-    if (sigaction(SIGCHLD, &sa_chld, NULL) == -1) {
-        perror("sigaction for SIGCHLD");
-        exit(EXIT_FAILURE);
-    }
-
-    // Set up SIGIO handler
-    sa_io.sa_handler = signal_handler;
-    sigemptyset(&sa_io.sa_mask);
-    sa_io.sa_flags = 0;
-    if (sigaction(SIGIO, &sa_io, NULL) == -1) {
-        perror("sigaction for SIGIO");
-        exit(EXIT_FAILURE);
-    }
-
 
     // add the alarm handler
-    sa_alarm.sa_handler = alarm_handler;
-    sigemptyset(&sa_alarm.sa_mask);
-    sa_alarm.sa_flags = 0;
-
-    if (sigaction(SIGALRM, &sa_alarm, NULL) == -1) {
+    
+    if (set_handler(&sa_alarm, alarm_handler, NULL, SIGALRM, 0) == -1) {
         perror("sigaction for SIGALRM");
         exit(EXIT_FAILURE);
     }
 
-
-    sa_usr1.sa_handler = signal_handler;
-    sigemptyset(&sa_usr1.sa_mask);
-    sa_usr1.sa_flags = 0;
-
-    if (sigaction(SIGUSR1, &sa_usr1, NULL) == -1) {
+    // add the signal handler for SIGUSR1
+    if (set_handler(&sa_usr1, signal_handler, NULL, SIGUSR1, 0) == -1) {
         perror("sigaction for SIGUSR1");
         exit(EXIT_FAILURE);
     }
 
-    sa_usr2.sa_handler = signal_handler;
-    sigemptyset(&sa_usr2.sa_mask);
-    sa_usr2.sa_flags = 0;
+    // add the signal handler for SIGUSR2
 
-    if (sigaction(SIGUSR2, &sa_usr2, NULL) == -1) {
+    if (set_handler(&sa_usr2, signal_handler, NULL, SIGUSR2, 0) == -1) {
         perror("sigaction for SIGUSR2");
+        exit(EXIT_FAILURE);
+    }
+
+    // add handler for SIGINT when the user presses ctrl+c
+    if (set_handler(&sa_int, signalt_handler_int, NULL, SIGINT, 0) == -1) {
+        perror("sigaction for SIGCHLD");
         exit(EXIT_FAILURE);
     }
 
@@ -257,12 +244,13 @@ int main(int argc, char *argv[]) {
     
     usleep(500);
 
-   doOneRound();
+    doOneRound();
     
     // wait for all children to finish
     for (int i = 0; i < 2*PLAYERS_PER_TEAM; i++) {
         waitpid(process_pid[i], &status, 0);
     }
+
     waitpid(gui_pid, &status, 0);
 
     munmap(shared_mem, sizeof(struct shared_data));
@@ -333,13 +321,11 @@ void fork_children(){
 
     pid_t team1_lead_pid;
     pid_t team2_lead_pid;
-    pid_t next_player_pid;
 
 
     char team1_leader_pid_arg[10]="-1";
     char team2_leader_pid_arg[10]="-1";
     char next_player_pid_arg[10]="-1";
-    char next_pid_arg[10] = "-1";
 
 
     for (i = 2*PLAYERS_PER_TEAM-1; i >= 0; i--) {
@@ -388,14 +374,6 @@ void fork_children(){
             execlp("./child" ,"child.o",player_number_arg, energy_arg, next_player_arg, team1_leader_pid_arg, team2_leader_pid_arg,next_player_pid_arg, gui_pid_arg ,(const char*)NULL);
 
             perror("execvp failed.\n");
-            
-            // To kill all child processes (from stack-overflow), might need to be tested. 
-
-            /*
-               One way to accomplish this is to deliver some signal that can be caught (not
-               SIGKILL). Then, install a signal handler that detects if the current process is
-               the parent process or not, and calls _exit() if it is not the parent process.(ibid, et al).
-            */
 
             signal(SIGQUIT, SIG_IGN);
             kill(0, SIGQUIT);

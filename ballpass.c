@@ -24,8 +24,6 @@ struct Ball {
 struct Player {
     float x;
     float y;
-
-    struct Ball* ball;
 };
 
 struct Ball balls[MAX_NUM_BALLS];
@@ -52,7 +50,7 @@ void init() {
 
 void signal_handler_usr1(int signum, siginfo_t *si, void *ptr);
 void signal_handler_usr2(int signum, siginfo_t *si, void *ptr);
-void signal_handler_ui(int signum, siginfo_t *si, void *ptr);
+void signal_handler_ui(int signum);
 
 void display() {
     glClear(GL_COLOR_BUFFER_BIT);
@@ -65,16 +63,11 @@ void display() {
     for (int i = 0; i < MAX_NUM_BALLS; i++) {
         if (balls[i].holder != NULL) {
             updateBallPosition(&balls[i], balls[i].holder, SPEED);
-           // drawBall(blueTeam[i].ball->x, blueTeam[i].ball->y, 0.03f, 1.0f, 1.0f, 1.0f); // White color for balls
         }
-    }
-
-    
-    for (int i = 0; i < MAX_NUM_BALLS; i++) {
 
         drawBall(balls[i].x, balls[i].y, 0.03f, 1.0f, 1.0f, 1.0f); // White color for balls
     }
-    
+
 
     glFlush();
 }
@@ -92,13 +85,6 @@ void updateBallPosition(struct Ball* ball, struct Player* targetPlayer, float sp
     // Check if ball reached the destination
     if(dx < 0.01 && dy < 0.01) {
        ball->moving = false;
-        /*
-        if (ball == &balls[0]) {
-            blueActivePlayer = (blueActivePlayer + 1) % NUM_PLAYERS_PER_TEAM; // Update active player for blue team to next player
-        } else if (ball == &balls[1]){
-            redActivePlayer = (redActivePlayer + 1) % NUM_PLAYERS_PER_TEAM; // Update active player for red team
-        }
-        */
     }
 }
 
@@ -129,33 +115,14 @@ void drawPlayers(struct Player team[], float r, float g, float b) {
     for (int i = 0; i < NUM_PLAYERS_PER_TEAM; ++i) {
         if (i == 5) {
             if (r == 1.0f && g == 0.0f && b == 0.0f) // Red team
-                drawSquare(team[i].x, team[i].y, 0.05f, 0.0f, 1.0f, 0.0f); // Green color for first red player
+                drawSquare(team[i].x, team[i].y, 0.05f, 0.0f, 1.0f, 0.0f); // Green color for redTeam leader
             else if (r == 0.0f && g == 0.0f && b == 1.0f) // Blue team
-                drawSquare(team[i].x, team[i].y, 0.05f, 1.0f, 1.0f, 0.0f); // Yellow color for first blue player
+                drawSquare(team[i].x, team[i].y, 0.05f, 1.0f, 1.0f, 0.0f); // Yellow color for blueTeam leader
         } else {
             drawSquare(team[i].x, team[i].y, 0.05f, r, g, b);
         }
     }
 }
-
-/*
-void keyboard(unsigned char key, int x, int y) {
-    switch (key) {
-        case 'p': // 'p' key to pass the blue ball
-            passBall(&balls[0], &blueTeam[blueActivePlayer], SPEED*2);
-            break;
-        case 'P': // 'P' key to pass the red ball
-            passBall(&balls[0], &redTeam[redActivePlayer], SPEED*2);
-            break;
-    }
-    glutPostRedisplay();
-}
-
-*/
-
-// sigui -> new round
-//
-//
 
 
 void signal_handler_usr1(int signum, siginfo_t *si, void *ptr) {
@@ -262,11 +229,6 @@ void signal_handler_usr1(int signum, siginfo_t *si, void *ptr) {
             int receiver = received % 10;
 
 
-            // initially (just to test)
-            // 
-            //
-            //
-            //
             if (receiver <= 5) {
 
                 struct Ball* temp = NULL;
@@ -298,8 +260,6 @@ void signal_handler_usr1(int signum, siginfo_t *si, void *ptr) {
                 temp->holder = &redTeam[receiver];
                 passBall(temp, &redTeam[receiver], SPEED);
             }
-            
-            // Pass the ball to the receiver
 
         }
 
@@ -307,16 +267,10 @@ void signal_handler_usr1(int signum, siginfo_t *si, void *ptr) {
     glutPostRedisplay();
 }
 
-void signal_handler_usr2(int signum, siginfo_t *si, void *ptr) {
-    //TODO
-}
 
-void signal_handler_ui(int signum, siginfo_t *si, void *ptr) {
+void signal_handler_ui(int signu) {
     new_round();
 }
-
-
-
 
 void new_round() {
 
@@ -352,16 +306,7 @@ int main(int argc, char** argv) {
         exit(EXIT_FAILURE);
     }
 
-    sa_usr2.sa_sigaction = signal_handler_usr2;
-    sa_usr2.sa_flags = SA_SIGINFO;
-    sigemptyset(&sa_usr2.sa_mask);
-
-    if (sigaction(SIGUSR2, &sa_usr2, NULL) == -1) {
-        perror("sigaction for SIGUSR2");
-        exit(EXIT_FAILURE);
-    }
-
-    sa_ui.sa_sigaction = signal_handler_ui;
+    sa_ui.sa_handler = signal_handler_ui;
     sigemptyset(&sa_ui.sa_mask);
     sa_ui.sa_flags = SA_SIGINFO;
 

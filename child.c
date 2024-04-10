@@ -1,13 +1,11 @@
 #include "includes/include.h"
 #include "includes/std.h"
-#include <asm-generic/signal-defs.h>
 
 unsigned energy;
 unsigned player_number;
 unsigned next_player_number;
 #define A 5
 #define K 2
-#define RAND 14
 pid_t pid_of_team1_leader;
 pid_t pid_of_team2_leader;
 pid_t next_player_pid;
@@ -15,13 +13,11 @@ double short_pause_duration();
 bool player_drops_ball();
 int gui_pid;
 
-pid_t this_team_leader_pid;
-pid_t other_team_leader_pid;
 void send_ball_to_next_player();
 
-bool ignore_usr1_usr2 = false;
+int set_handler(struct sigaction *sa, void (*sa_handler1)(int), void(*sa_sigaction1)(int, siginfo_t*, void* )  , int signum, int mode);
 
-struct sigaction sa_usr1, sa_usr2, sa_chld, sa_io, ignore_action, empty_action, sa_bus;
+struct sigaction sa_usr1, sa_usr2, sa_chld, sa_bus, sa_int;
 
 int sig_bus_num = 0;
 
@@ -70,6 +66,18 @@ void signal_handler_usr1(int signum) {
 }
 
 
+void signal_handler_sigint () {
+
+    // clean up
+    munmap(shared_mem, sizeof(struct shared_data));
+    close(fd_shm);
+
+    // send sigint to the gui and child processes to terminate them
+    usleep(20);
+    exit(EXIT_SUCCESS);
+}
+
+
 void signal_handler_usr2 (int signum) {
 
     if (signum == SIGUSR2) {
@@ -95,32 +103,6 @@ void signal_handler_usr2 (int signum) {
     fflush(stdout);
 }
 
-void signal_handler_sigchild(int signum) {
-
-
-    if (signum == SIGCHLD) {
-
-        sigset_t signal_set;
-        int sig;
-
-        // Create a sinnal set containing SIGUSR1 and SIGUSR2
-        sigemptyset(&signal_set);
-        sigaddset(&signal_set, SIGUSR1);
-        sigaddset(&signal_set, SIGUSR2);
-        sigaddset(&signal_set, SIGCHLD); // the signal that should unblock the process.
-
-        // Block SIGUSR1 and SIGUSR2
-        sigprocmask(SIG_BLOCK, &signal_set, NULL);
-
-        // wait for a SIGCHILD signal only
-
-        // wait for SIGUSR1 or SIGUSR2
-        sigwait(&signal_set, &sig);
-    }
-
-    fflush(stdout);
-}
-
 
 void handler_bus(int signum, siginfo_t *info, void *context) {
 
@@ -140,24 +122,16 @@ void handler_bus(int signum, siginfo_t *info, void *context) {
 }
 
 
-void dummy_handler(int signum);
-
-
 int main(int argc, char* argv[]) {
     
     open_shared_mem();
-
-    // Set the handler to ignore
-    ignore_action.sa_handler = SIG_IGN;
-    sigemptyset(&ignore_action.sa_mask);
-    ignore_action.sa_flags = 0;
 
     // TODO: if argc != numberOfArgs.. 
 
     srand(getpid());
 
     char* arguments=malloc(50 * sizeof(char));
-
+    arguments[0] = '\0';
     for (int i = 1; i < argc; i++) {
 
         strcat(arguments, " ");
@@ -180,41 +154,28 @@ int main(int argc, char* argv[]) {
 
 
     // Set up SIGUSR1 handler
-    sa_usr1.sa_handler = signal_handler_usr1;
-    sigemptyset(&sa_usr1.sa_mask);
-    sa_usr1.sa_flags = 0;
-    if (sigaction(SIGUSR1, &sa_usr1, NULL) == -1) {
+
+    if (set_handler(&sa_usr1, signal_handler_usr1, NULL, SIGUSR1, 0) == -1) {
         perror("sigaction for SIGUSR1");
         exit(EXIT_FAILURE);
     }
 
     // Set up SIGUSR2 handler
-    sa_usr2.sa_handler = signal_handler_usr2;
-    sigemptyset(&sa_usr2.sa_mask);
-    sa_usr2.sa_flags = 0;
-    if (sigaction(SIGUSR2, &sa_usr2, NULL) == -1) {
+    if (set_handler(&sa_usr2, signal_handler_usr2, NULL, SIGUSR2, 0) == -1) {
         perror("sigaction for SIGUSR2");
         exit(EXIT_FAILURE);
     }
 
-    // Set up SIGCHLD handler
-    sa_chld.sa_handler = signal_handler_sigchild;
-    sigemptyset(&sa_chld.sa_mask);
-    sa_chld.sa_flags = 0;
-    if (sigaction(SIGCHLD, &sa_chld, NULL) == -1) {
-        perror("sigaction for SIGCHLD");
-        exit(EXIT_FAILURE);
-    }
-
-
-    sa_bus.sa_sigaction = handler_bus;
-    sigemptyset(&sa_bus.sa_mask);
-    sa_bus.sa_flags = SA_SIGINFO;
-    if (sigaction(SIGBUS, &sa_bus, NULL) == -1) {
+    if (set_handler(&sa_bus, NULL, handler_bus, SIGBUS, 1) == -1) {
         perror("sigaction for SIGBUS");
         exit(EXIT_FAILURE);
     }
 
+    // Set up SIGINT handler
+    if (set_handler(&sa_int,signal_handler_sigint, NULL, SIGINT, 0) == -1) {
+        perror("sigaction for SIGINT");
+        exit(EXIT_FAILURE);
+    }
 
     while (1) {
         
@@ -258,7 +219,6 @@ void send_ball(int next_player_pid, int signum, int next_player_number) {
     #ifdef __GUI__
     usleep(1000);
 
- //   if (next_player_number <= 5) {
     
     if (player_number == 5 && next_player_number == 11) {
         value.sival_int = 511;
@@ -281,7 +241,6 @@ void send_ball(int next_player_pid, int signum, int next_player_number) {
 
     sigqueue(gui_pid, SIGUSR1, value);
 
-   // }
     #endif
 
     printf("sending ball %d(%d) -> %d(%d), remaining energy is: %d\n", getpid(), player_number, next_player_pid, next_player_number,energy);
@@ -296,14 +255,14 @@ void send_ball(int next_player_pid, int signum, int next_player_number) {
         my_pause(short_pause_duration());
         kill(next_player_pid, signum);
     }
-    else{
+
+    else {
         kill(next_player_pid, signum);
     }
     
 }
 
 bool player_drops_ball() {
-    srand(time(NULL)); // Seed the random number generator with the current time
     int random_number = rand() % 100; // Generate a random number between 0 and 99
     // Let's say there's a 5% chance the player will drop the ball
     if (random_number < 5) {
@@ -312,6 +271,5 @@ bool player_drops_ball() {
         return false; // Player does not drop the ball
     }
 }
-
 
 
